@@ -456,6 +456,144 @@ describe("Real-world Scenarios", () => {
   })
 })
 
+describe("Bash Tool Protection", () => {
+  let plugin: any
+  let hook: any
+
+  beforeAll(async () => {
+    plugin = await createPlugin()
+    hook = plugin["tool.execute.before"]
+  })
+
+  describe("blocks sensitive files referenced in bash commands", () => {
+    test("blocks 'cat secrets.json'", async () => {
+      expect(callHook(hook, "bash", { command: "cat secrets.json" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+
+    test("blocks 'head .env'", async () => {
+      expect(callHook(hook, "bash", { command: "head .env" }))
+        .rejects.toThrow(/Access denied.*\.env/)
+    })
+
+    test("blocks 'tail -n 10 credentials.json'", async () => {
+      expect(callHook(hook, "bash", { command: "tail -n 10 credentials.json" }))
+        .rejects.toThrow(/Access denied.*credentials\.json/)
+    })
+
+    test("blocks 'less private.key'", async () => {
+      expect(callHook(hook, "bash", { command: "less private.key" }))
+        .rejects.toThrow(/Access denied.*private\.key/)
+    })
+
+    test("blocks 'wc -l secrets.json'", async () => {
+      expect(callHook(hook, "bash", { command: "wc -l secrets.json" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+  })
+
+  describe("handles quoted paths correctly", () => {
+    test("blocks double-quoted path: cat \"secrets.json\"", async () => {
+      expect(callHook(hook, "bash", { command: 'cat "secrets.json"' }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+
+    test("blocks single-quoted path: cat 'secrets.json'", async () => {
+      expect(callHook(hook, "bash", { command: "cat 'secrets.json'" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+
+    test("blocks double-quoted .env: cat \".env\"", async () => {
+      expect(callHook(hook, "bash", { command: 'cat ".env"' }))
+        .rejects.toThrow(/Access denied.*\.env/)
+    })
+  })
+
+  describe("handles multi-command pipelines and operators", () => {
+    test("blocks secrets.json before pipe: cat secrets.json | grep foo", async () => {
+      expect(callHook(hook, "bash", { command: "cat secrets.json | grep foo" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+
+    test("blocks secrets.json after &&: ls src && cat secrets.json", async () => {
+      expect(callHook(hook, "bash", { command: "ls src && cat secrets.json" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+
+    test("blocks .env in redirect: cat .env > /tmp/out.txt", async () => {
+      expect(callHook(hook, "bash", { command: "cat .env > /tmp/out.txt" }))
+        .rejects.toThrow(/Access denied.*\.env/)
+    })
+
+    test("blocks .env in semicolon chain: echo hello; cat .env", async () => {
+      expect(callHook(hook, "bash", { command: "echo hello; cat .env" }))
+        .rejects.toThrow(/Access denied.*\.env/)
+    })
+  })
+
+  describe("allows safe bash commands", () => {
+    test("allows 'cat index.ts'", async () => {
+      expect(callHook(hook, "bash", { command: "cat index.ts" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("allows 'ls src'", async () => {
+      expect(callHook(hook, "bash", { command: "ls src" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("allows 'echo hello'", async () => {
+      expect(callHook(hook, "bash", { command: "echo hello" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("allows 'git status'", async () => {
+      expect(callHook(hook, "bash", { command: "git status" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("allows 'npm install'", async () => {
+      expect(callHook(hook, "bash", { command: "npm install" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("allows 'cat README.md'", async () => {
+      expect(callHook(hook, "bash", { command: "cat README.md" }))
+        .resolves.toBeUndefined()
+    })
+  })
+
+  describe("edge cases", () => {
+    test("graceful degradation: missing .ignore allows all bash commands", async () => {
+      const tempDir = "/tmp/test-bash-no-ignore-" + Date.now()
+      const tempPlugin = await createPlugin(tempDir)
+      const tempHook = tempPlugin["tool.execute.before"]!
+      expect(callHook(tempHook, "bash", { command: "cat secrets.json" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("handles empty command string gracefully", async () => {
+      expect(callHook(hook, "bash", { command: "" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("handles missing command arg gracefully", async () => {
+      expect(callHook(hook, "bash", {}))
+        .resolves.toBeUndefined()
+    })
+
+    test("command name alone (no args) is allowed", async () => {
+      expect(callHook(hook, "bash", { command: "secrets.json" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("flag-only command is allowed: grep -r pattern", async () => {
+      expect(callHook(hook, "bash", { command: "grep -r pattern" }))
+        .resolves.toBeUndefined()
+    })
+  })
+})
+
 describe("Glob Tool Result Filtering", () => {
   let plugin: any
   let afterHook: any

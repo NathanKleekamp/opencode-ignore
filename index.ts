@@ -2,6 +2,7 @@ import type {Plugin} from "@opencode-ai/plugin"
 import ignore from "ignore"
 import {isPathValid} from "ignore"
 import {join, isAbsolute, relative} from "path"
+import {parse as parseShellQuote} from "shell-quote"
 
 /**
  * Load ignore patterns from project root
@@ -215,6 +216,50 @@ function extractPathFromTool(tool: string, args: Record<string, unknown>): PathI
 }
 
 /**
+ * Extract candidate paths from a bash command string using shell-quote lexer.
+ *
+ * Uses shell-quote to properly lex the command, handling:
+ * - Quoted paths: cat "my file.txt", cat 'dir/file'
+ * - Multi-command pipelines: cat secrets.json | grep foo
+ * - Redirections: cat file.txt > /tmp/out
+ * - All shell control operators (|, ||, &&, ;, >, <, &, etc.)
+ *
+ * shell-quote returns a ParseEntry[] where each entry is either:
+ *   - string          → a literal argument token
+ *   - { op: string }  → a control operator (|, &&, ;, >, etc.) or glob
+ *   - { comment: string } → a shell comment (#...)
+ *
+ * Only string tokens are candidate paths. Operator and comment objects
+ * are discarded. The first string token (index 0 after filtering) is
+ * the command binary itself (e.g. "cat", "head") and is also skipped,
+ * because a command name is never a project file path.
+ *
+ * IMPORTANT: Tokens that are empty strings are skipped.
+ *
+ * Known limitations (do not try to handle these):
+ * - $VAR references: shell-quote expands unknown vars to "", which won't match
+ * - $(subshell): not parsed, treated as a bareword, won't resolve
+ * - Shell globs (*.key): returned as { op: "glob" } objects, not strings, so skipped
+ * - Brace expansion (sec{rets,}.json): not expanded, treated as a single bareword
+ *
+ * @param command - Raw bash command string from args.command
+ * @returns Array of string tokens that are candidate paths (command name excluded)
+ */
+function extractPathsFromBashCommand(command: string): string[] {
+  const tokens = parseShellQuote(command)
+
+  const stringTokens = tokens.filter((token): token is string => typeof token === "string")
+
+  // Skip index 0 (the command binary: "cat", "head", "ls", etc.)
+  // It is never a project file path.
+  const args = stringTokens.slice(1)
+
+  // Filter out empty strings and flag-style arguments (starting with "-")
+  // Flags like -n, --lines, -rf are never file paths.
+  return args.filter(token => token.length > 0 && !token.startsWith("-"))
+}
+
+/**
  * OpenCode plugin to restrict AI access using .ignore patterns
  *
  * Intercepts native OpenCode tools (read, write, edit, glob, grep, list)
@@ -247,16 +292,22 @@ export const OpenCodeIgnore: Plugin = async ({project, client, $, directory, wor
      */
     "tool.execute.before": async ({tool}, {args}) => {
       const pathInfo = extractPathFromTool(tool, args)
-      
-      // Skip tools that don't operate on paths
-      if (!pathInfo) return
-      
-      // Always allow project root to prevent blocking entire project
-      if (pathInfo.path === ".") return
-      
-      // Check if path matches any ignore pattern
-      if (await isPathBlocked(pathInfo.path, projectRoot, pathInfo.isDirectory)) {
-        throw new Error(`Access denied: ${pathInfo.path} blocked by ignore file. Do NOT try to read this. Access restricted.`)
+
+      if (pathInfo) {
+        if (pathInfo.path !== ".") {
+          if (await isPathBlocked(pathInfo.path, projectRoot, pathInfo.isDirectory)) {
+            throw new Error(`Access denied: ${pathInfo.path} blocked by ignore file. Do NOT try to read this. Access restricted.`)
+          }
+        }
+      }
+
+      if (tool === "bash" && typeof args.command === "string" && args.command.length > 0) {
+        const candidatePaths = extractPathsFromBashCommand(args.command)
+        for (const candidatePath of candidatePaths) {
+          if (await isPathBlocked(candidatePath, projectRoot, false)) {
+            throw new Error(`Access denied: ${candidatePath} blocked by ignore file. Do NOT try to read this. Access restricted.`)
+          }
+        }
       }
     },
     
