@@ -25,7 +25,8 @@
   "scripts": {
     "build": "bun build ./index.ts --outdir ./dist --target node",
     "prepublishOnly": "bun run build",
-    "test": "bun test"
+    "test": "bun test",
+    "deploy": "bun build ./index.ts --outfile $OPENCODE_DIR/plugins/opencode-ignore.js --target bun --external @opencode-ai/plugin"
   },
   "module": "./dist/index.js",
   "main": "./dist/index.js",
