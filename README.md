@@ -143,9 +143,13 @@ The plugin protects the following OpenCode native tools:
 ### List Operations (Pre-execution blocking)
 - `list` - Blocks listing blocked directories
 
+### Shell Commands (Pre-execution argument scanning)
+- `bash` - Scans command arguments for blocked file paths before execution
+
 **Protection Levels**:
 - **Pre-execution**: Prevents tool from accessing blocked paths entirely (read, write, edit, list)
 - **Post-execution**: Allows search but filters blocked files from results (glob, grep)
+- **Bash scanning**: Lexes shell commands and checks each argument against ignore patterns
 - This two-phase approach prevents both direct access and information disclosure
 
 **Note**: Project root (`.`) is always accessible to prevent blocking entire project.
@@ -157,6 +161,26 @@ The plugin protects the following OpenCode native tools:
 2. Tool paths are normalized to relative paths from project root
 3. Paths are checked against ignore patterns using the `ignore` library
 4. If matched, tool execution is blocked with clear error message
+
+### Bash Command Scanning
+For `bash` commands, the plugin scans shell command arguments for blocked paths:
+1. Command string is lexed using [`shell-quote`](https://github.com/ljharb/shell-quote), which correctly handles quoted paths, pipelines (`|`), operators (`&&`, `;`), and redirections (`>`, `<`)
+2. The command binary itself (first token) is skipped — only arguments are checked
+3. Flag-style tokens (starting with `-`) are skipped
+4. Each remaining argument token is checked against ignore patterns
+5. If any argument matches, the entire command is blocked before execution
+
+**Supported shell constructs**:
+- Quoted paths: `cat "my file.txt"`, `cat 'secrets.json'`
+- Pipelines: `cat secrets.json | grep foo`
+- Operators: `ls src && cat secrets.json`
+- Redirections: `cat .env > /tmp/out.txt`
+- Semicolon chains: `echo hello; cat .env`
+
+**Known limitations** (by design):
+- Shell variable references (`$VAR`) are not resolved
+- Subshell expressions (`$(...)`) are not parsed
+- Shell globs (`*.key`) are not expanded
 
 ### Post-execution Filtering (glob/grep)
 For `glob` and `grep` tools, additional protection filters results:
@@ -201,6 +225,7 @@ Tests cover:
 - Directory vs file matching
 - Path normalization edge cases
 - All supported native tools
+- Bash command argument scanning (quoted paths, pipelines, operators, redirections)
 - Missing `.ignore` graceful degradation
 
 ## Development
@@ -223,4 +248,5 @@ MIT
 ## Related
 
 - [`ignore`](https://github.com/kaelzhang/node-ignore) - The underlying pattern matching library
+- [`shell-quote`](https://github.com/ljharb/shell-quote) - Shell command lexer used for bash argument scanning
 - [OpenCode Plugin Documentation](https://opencode.ai/docs/plugins)
