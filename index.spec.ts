@@ -592,6 +592,110 @@ describe("Bash Tool Protection", () => {
         .resolves.toBeUndefined()
     })
   })
+
+  describe("Git Command Interception", () => {
+    test("blocks git show with sensitive file via HEAD:<path>", async () => {
+      expect(callHook(hook, "bash", { command: "git show HEAD:secrets.json" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+
+    test("blocks git show with sensitive file via <sha>:<path>", async () => {
+      expect(callHook(hook, "bash", { command: "git show abc1234:credentials.json" }))
+        .rejects.toThrow(/Access denied.*credentials\.json/)
+    })
+
+    test("blocks git show with sensitive file via :<path> (index)", async () => {
+      expect(callHook(hook, "bash", { command: "git show :.env" }))
+        .rejects.toThrow(/Access denied.*\.env/)
+    })
+
+    test("allows git show with allowed file via HEAD:<path>", async () => {
+      expect(callHook(hook, "bash", { command: "git show HEAD:README.md" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("blocks git cat-file entirely when .ignore exists", async () => {
+      // Any cat-file is blocked regardless of path/sha
+      expect(callHook(hook, "bash", { command: "git cat-file -p abc1234" }))
+        .rejects.toThrow(/Access denied: git cat-file is blocked/)
+      expect(callHook(hook, "bash", { command: "git cat-file blob HEAD:README.md" }))
+        .rejects.toThrow(/Access denied: git cat-file is blocked/)
+    })
+
+    test("blocks git log -p -- <path> with sensitive file", async () => {
+      expect(callHook(hook, "bash", { command: "git log -p -- secrets.json" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+
+    test("allows git log -p -- <path> with allowed file", async () => {
+      expect(callHook(hook, "bash", { command: "git log -p -- README.md" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("blocks git diff -- <path> with sensitive file", async () => {
+      expect(callHook(hook, "bash", { command: "git diff HEAD~1 HEAD -- credentials.json" }))
+        .rejects.toThrow(/Access denied.*credentials\.json/)
+    })
+
+    test("blocks git grep with sensitive file after --", async () => {
+      expect(callHook(hook, "bash", { command: "git grep password HEAD -- secrets.json" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+
+    test("blocks git blame with sensitive file", async () => {
+      expect(callHook(hook, "bash", { command: "git blame secrets.json" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+      // Also with --
+      expect(callHook(hook, "bash", { command: "git blame -- credentials.json" }))
+        .rejects.toThrow(/Access denied.*credentials\.json/)
+    })
+
+    test("blocks git archive with sensitive file", async () => {
+      expect(callHook(hook, "bash", { command: "git archive HEAD secrets.json" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+
+    test("blocks pipelines starting with blocked git command", async () => {
+      expect(callHook(hook, "bash", { command: "git show HEAD:secrets.json | grep foo" }))
+        .rejects.toThrow(/Access denied.*secrets\.json/)
+    })
+
+    test("graceful degradation: missing .ignore allows git cat-file", async () => {
+      const tempDir = "/tmp/test-git-no-ignore-" + Date.now()
+      const tempPlugin = await createPlugin(tempDir)
+      const tempHook = tempPlugin["tool.execute.before"]!
+      expect(callHook(tempHook, "bash", { command: "git cat-file -p abc1234" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("blocks git cat-file -t regardless of path", async () => {
+      expect(callHook(hook, "bash", { command: "git cat-file -t HEAD:README.md" }))
+        .rejects.toThrow(/Access denied: git cat-file is blocked/)
+    })
+
+    test("blocks git log --follow -p -- .env", async () => {
+      expect(callHook(hook, "bash", { command: "git log --follow -p -- .env" }))
+        .rejects.toThrow(/Access denied.*\.env/)
+    })
+
+    test("allows git grep with allowed file after --", async () => {
+      expect(callHook(hook, "bash", { command: "git grep export HEAD -- index.ts" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("allows pipeline starting with git show of allowed file", async () => {
+      expect(callHook(hook, "bash", { command: "git show HEAD:index.ts | grep export" }))
+        .resolves.toBeUndefined()
+    })
+
+    test("graceful degradation: missing .ignore allows git show of sensitive file", async () => {
+      const tempDir = "/tmp/test-git-show-no-ignore-" + Date.now()
+      const tempPlugin = await createPlugin(tempDir)
+      const tempHook = tempPlugin["tool.execute.before"]!
+      expect(callHook(tempHook, "bash", { command: "git show HEAD:secrets.json" }))
+        .resolves.toBeUndefined()
+    })
+  })
 })
 
 describe("Glob Tool Result Filtering", () => {
