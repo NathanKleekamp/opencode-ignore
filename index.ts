@@ -76,19 +76,22 @@ function normalizePath(
  * @param targetPath - Path to check (absolute or relative)
  * @param projectRoot - Absolute path to project root
  * @param isDirectory - Whether the path represents a directory
+ * @param ignoreLib - Optional pre-loaded ignore instance
  * @returns true if path matches ignore patterns (should be blocked), false otherwise
  */
 async function isPathBlocked(
   targetPath: string,
   projectRoot: string,
   isDirectory: boolean,
+  ignoreLib?: ReturnType<typeof ignore> | null,
 ): Promise<boolean> {
-  const ignoreLib = await loadIgnore(projectRoot);
-  if (!ignoreLib) return false; // No .ignore file = allow all access
+  const lib =
+    ignoreLib === undefined ? await loadIgnore(projectRoot) : ignoreLib;
+  if (!lib) return false; // No .ignore file = allow all access
 
   const normalizedPath = normalizePath(targetPath, projectRoot, isDirectory);
 
-  return ignoreLib.ignores(normalizedPath);
+  return lib.ignores(normalizedPath);
 }
 
 /**
@@ -393,6 +396,7 @@ export const OpenCodeIgnore: Plugin = async ({ directory, worktree }) => {
      * Checks if tool's target path is blocked by .ignore patterns
      */
     "tool.execute.before": async ({ tool }, { args }) => {
+      const ignoreLib = await loadIgnore(projectRoot);
       const pathInfo = extractPathFromTool(tool, args);
 
       if (pathInfo) {
@@ -402,6 +406,7 @@ export const OpenCodeIgnore: Plugin = async ({ directory, worktree }) => {
               pathInfo.path,
               projectRoot,
               pathInfo.isDirectory,
+              ignoreLib,
             )
           ) {
             throw new Error(
@@ -414,24 +419,24 @@ export const OpenCodeIgnore: Plugin = async ({ directory, worktree }) => {
       if (
         tool === "bash" &&
         typeof args.command === "string" &&
-        args.command.length > 0
+        args.command.length > 0 &&
+        ignoreLib
       ) {
-        const ignoreLib = await loadIgnore(projectRoot);
-        if (ignoreLib) {
-          const { paths, blockEntirely } = extractPathsFromBashCommand(
-            args.command,
+        const { paths, blockEntirely } = extractPathsFromBashCommand(
+          args.command,
+        );
+        if (blockEntirely) {
+          throw new Error(
+            `Access denied: git cat-file is blocked by ignore file. Do NOT try to read this. Access restricted.`,
           );
-          if (blockEntirely) {
+        }
+        for (const candidatePath of paths) {
+          if (
+            await isPathBlocked(candidatePath, projectRoot, false, ignoreLib)
+          ) {
             throw new Error(
-              `Access denied: git cat-file is blocked by ignore file. Do NOT try to read this. Access restricted.`,
+              `Access denied: ${candidatePath} blocked by ignore file. Do NOT try to read this. Access restricted.`,
             );
-          }
-          for (const candidatePath of paths) {
-            if (await isPathBlocked(candidatePath, projectRoot, false)) {
-              throw new Error(
-                `Access denied: ${candidatePath} blocked by ignore file. Do NOT try to read this. Access restricted.`,
-              );
-            }
           }
         }
       }
